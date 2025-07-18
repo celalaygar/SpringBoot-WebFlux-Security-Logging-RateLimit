@@ -1,12 +1,10 @@
 package com.security.securityProject.filter;
 
-import com.security.securityProject.config.JwtUtil;
+import com.security.securityProject.config.JwtUtil; // JwtUtil'in doğru paketten geldiğinden emin olun
 import com.security.securityProject.entity.ApiLog;
-import com.security.securityProject.entity.User;
-import com.security.securityProject.repository.ApiLogRepository; // ApiLogRepository'ye doğrudan erişim yerine LoggingService kullanılacak
-
-import com.security.securityProject.repository.UserRepository;
-import com.security.securityProject.service.LoggingService; // Yeni LoggingService'i import et
+import com.security.securityProject.entity.User; // Eğer User nesnesi kullanılıyorsa
+import com.security.securityProject.repository.UserRepository; // Eğer UserRepository kullanılıyorsa
+import com.security.securityProject.service.LoggingService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferFactory;
@@ -16,7 +14,7 @@ import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.http.server.reactive.ServerHttpRequestDecorator;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.http.server.reactive.ServerHttpResponseDecorator;
-import org.springframework.security.core.context.ReactiveSecurityContextHolder;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder; // Eğer güvenlik bağlamından kullanıcı alınıyorsa
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
@@ -35,9 +33,9 @@ public class RequestResponseLoggingFilter implements WebFilter {
 
     private static final String TRACE_ID_HEADER = "X-Trace-ID"; // Trace ID için özel header adı
 
-    private final LoggingService loggingService; // Yeni LoggingService
-    private final JwtUtil jwtUtil; // Token'dan email almak için
-    private final UserRepository userRepository;
+    private final LoggingService loggingService;
+    private final JwtUtil jwtUtil;
+    // private final UserRepository userRepository; // Eğer getAuthUser() kullanılıyorsa aktif edin
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
@@ -84,14 +82,11 @@ public class RequestResponseLoggingFilter implements WebFilter {
             apiLog.setAuthenticatedUser("anonymous"); // Token yoksa anonim
         }
 
-
         // İstek gövdesini yakala ve yeniden hazırla
         return DataBufferUtils.join(request.getBody())
                 .defaultIfEmpty(bufferFactory.wrap(new byte[0])) // İstek gövdesi yoksa boş DataBuffer sağla
                 .flatMap(requestDataBuffer -> {
                     // İstek gövdesini kopyala ve byte[]'e oku
-                    // DataBufferUtils.retain() çağrısı, DataBuffer'ın referans sayısını artırır.
-                    // Bu, okuma işlemi sırasında buffer'ın tüketilmesini önler.
                     DataBuffer retainedRequestDataBuffer = DataBufferUtils.retain(requestDataBuffer);
                     byte[] requestBodyBytes = new byte[retainedRequestDataBuffer.readableByteCount()];
                     retainedRequestDataBuffer.read(requestBodyBytes);
@@ -99,41 +94,37 @@ public class RequestResponseLoggingFilter implements WebFilter {
 
                     String requestBody = new String(requestBodyBytes, StandardCharsets.UTF_8);
                     apiLog.setRequestBody(requestBody);
+                    System.out.println("Request Body Yakalandı (Filter): " + requestBody); // Debug log
 
                     // İstek gövdesini yeniden akışa veren bir ServerHttpRequestDecorator oluşturulur.
-                    // ÖNEMLİ DEĞİŞİKLİK: getBody() metodu, cached byte[]'den YENİ bir DataBuffer oluşturur.
                     ServerHttpRequest decoratedRequest = new ServerHttpRequestDecorator(request) {
                         @Override
                         public Flux<DataBuffer> getBody() {
-                            // Yeni bir DataBuffer oluşturup okunan byte dizisini sarmalarız.
-                            // Bu, orijinal akışı bozmadan gövdenin yeniden okunmasını sağlar.
                             return Flux.just(bufferFactory.wrap(requestBodyBytes));
                         }
                     };
 
                     // Yanıt gövdesini yakalayacak bir ServerHttpResponseDecorator oluşturulur.
+                    // Yanıt gövdesini yakalamak için Mono.defer kullanmak, akışın doğru zamanda tetiklenmesini sağlar.
                     ServerHttpResponseDecorator decoratedResponse = new ServerHttpResponseDecorator(response) {
                         @Override
                         public Mono<Void> writeWith(org.reactivestreams.Publisher<? extends DataBuffer> body) {
-                            if (body instanceof Flux) {
-                                Flux<? extends DataBuffer> fluxBody = (Flux<? extends DataBuffer>) body;
-                                // Yanıt gövdesindeki tüm DataBuffer'ları birleştir.
-                                return DataBufferUtils.join(fluxBody)
-                                        .flatMap(responseDataBuffer -> {
-                                            // Yanıt gövdesini kopyala/retain et ve byte[]'e oku
-                                            DataBuffer retainedResponseDataBuffer = DataBufferUtils.retain(responseDataBuffer);
-                                            byte[] responseBodyBytes = new byte[retainedResponseDataBuffer.readableByteCount()];
-                                            retainedResponseDataBuffer.read(responseBodyBytes);
-                                            DataBufferUtils.release(retainedResponseDataBuffer); // Okuma bittikten sonra serbest bırak
+                            // Yanıt gövdesi boş olabileceği için defaultIfEmpty ile boş bir DataBuffer sağlarız.
+                            return DataBufferUtils.join(Flux.from(body))
+                                    .defaultIfEmpty(bufferFactory.wrap(new byte[0]))
+                                    .flatMap(responseDataBuffer -> {
+                                        DataBuffer retainedResponseDataBuffer = DataBufferUtils.retain(responseDataBuffer);
+                                        byte[] responseBodyBytes = new byte[retainedResponseDataBuffer.readableByteCount()];
+                                        retainedResponseDataBuffer.read(responseBodyBytes);
+                                        DataBufferUtils.release(retainedResponseDataBuffer);
 
-                                            String responseBody = new String(responseBodyBytes, StandardCharsets.UTF_8);
-                                            apiLog.setResponseBody(responseBody);
+                                        String responseBody = new String(responseBodyBytes, StandardCharsets.UTF_8);
+                                        apiLog.setResponseBody(responseBody);
+                                        System.out.println("Response Body Yakalandı (Filter): " + responseBody); // Debug log
 
-                                            // Orijinal yanıt akışını devam ettir.
-                                            return super.writeWith(Mono.just(bufferFactory.wrap(responseBodyBytes)));
-                                        });
-                            }
-                            return super.writeWith(body);
+                                        // Orijinal yanıt akışını devam ettir.
+                                        return super.writeWith(Mono.just(bufferFactory.wrap(responseBodyBytes)));
+                                    });
                         }
                     };
 
@@ -141,30 +132,30 @@ public class RequestResponseLoggingFilter implements WebFilter {
                     return chain.filter(exchange.mutate().request(decoratedRequest).response(decoratedResponse).build())
                             .doFinally(signalType -> {
                                 // İstek tamamlandığında loglama işlemini bitir
-                                apiLog.setResponseTime(LocalDateTime.now()); // Yanıt zamanını set et
+                                apiLog.setResponseTime(LocalDateTime.now());
                                 apiLog.setStatusCode(response.getStatusCode() != null ? response.getStatusCode().value() : 0);
                                 apiLog.setResponseHeaders(response.getHeaders().toSingleValueMap());
                                 apiLog.setDurationMillis(System.currentTimeMillis() - startTime);
-                                // LoggingService aracılığıyla logu kaydet
                                 loggingService.saveApiLog(apiLog).subscribe();
 
-                                // Orijinal requestDataBuffer'ı serbest bırakın (flatMap'ten sonra başka referansı kalmamalı)
-                                DataBufferUtils.release(requestDataBuffer);
+                                DataBufferUtils.release(requestDataBuffer); // Orijinal istek DataBuffer'ını serbest bırak
                             });
                 })
                 .onErrorResume(e -> {
-                    // Filtreleme sırasında herhangi bir hata oluşursa yakala, logla ve akışı hatayla bitir.
                     System.err.println("RequestResponseLoggingFilter sırasında hata oluştu: " + e.getMessage());
-                    apiLog.setResponseTime(LocalDateTime.now()); // Hata anında da yanıt zamanını set et
-                    //apiLog.setAuthenticatedUser(authenticatedUserRef.get());
+                    apiLog.setResponseTime(LocalDateTime.now());
+                    apiLog.setAuthenticatedUser(apiLog.getAuthenticatedUser() != null ? apiLog.getAuthenticatedUser() : "anonymous"); // Hata anında da kullanıcı bilgisini koru
                     apiLog.setResponseBody("Filtre işleme sırasında hata oluştu: " + e.getMessage());
                     apiLog.setStatusCode(response.getStatusCode() != null ? response.getStatusCode().value() : 500);
                     apiLog.setDurationMillis(System.currentTimeMillis() - startTime);
-                    loggingService.saveApiLog(apiLog).subscribe(); // Hatayı logla
-                    return Mono.error(e); // Orijinal hatayı akışta yay
+                    loggingService.saveApiLog(apiLog).subscribe();
+                    return Mono.error(e);
                 });
     }
 
+    // Bu metod filtre içinde doğrudan kullanılmıyor, ancak örneğinizde olduğu için bırakıldı.
+    // Eğer güvenlik bağlamından kullanıcı alacaksanız, bu metodu kullanabilirsiniz.
+    /*
     public Mono<User> getAuthUser() {
         return ReactiveSecurityContextHolder.getContext()
                 .map(securityContext -> {
@@ -173,4 +164,5 @@ public class RequestResponseLoggingFilter implements WebFilter {
                 })
                 .flatMap(userMono -> userMono); // Mono<User> döndürüyor
     }
+    */
 }
